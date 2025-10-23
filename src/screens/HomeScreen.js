@@ -56,8 +56,8 @@ export default function HomeScreen({ navigation }) {
   };
 
   const handleStartWorkout = (template) => {
-    // Navigate to WorkoutScreen (placeholder for Phase 2)
-    navigation.navigate('Workout');
+    // Navigate to WorkoutScreen with template data
+    navigation.navigate('Workout', { template });
   };
 
   const handleViewHistory = () => {
