@@ -112,7 +112,21 @@ export default function HomeScreen({ navigation }) {
             </Text>
             <TouchableOpacity
               style={styles.startButton}
-              onPress={() => handleStartWorkout(activeWorkout)}
+              onPress={() => {
+                // Find the matching template to pass to WorkoutScreen
+                const matchingTemplate = templates.find(t => t.templateId === activeWorkout.templateId);
+                if (matchingTemplate) {
+                  handleStartWorkout(matchingTemplate);
+                } else {
+                  // If template not found, create a minimal template from active workout
+                  handleStartWorkout({
+                    templateId: activeWorkout.templateId,
+                    name: activeWorkout.name,
+                    type: activeWorkout.type,
+                    exercises: activeWorkout.exercises
+                  });
+                }
+              }}
             >
               <Text style={styles.startButtonText}>Continue Workout</Text>
             </TouchableOpacity>

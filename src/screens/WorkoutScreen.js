@@ -13,7 +13,7 @@ import {
   KeyboardAvoidingView,
   Platform
 } from 'react-native';
-import { addWorkoutToHistory, clearActiveWorkout, saveActiveWorkout } from '../services/storage';
+import { addWorkoutToHistory, clearActiveWorkout, saveActiveWorkout, getActiveWorkout } from '../services/storage';
 import { createWorkoutLog, calculateWorkoutStats } from '../utils/workoutGenerator';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -26,16 +26,42 @@ export default function WorkoutScreen({ route, navigation }) {
   const [currentExerciseIndex, setCurrentExerciseIndex] = useState(0);
   const [workoutStartTime] = useState(new Date().toISOString());
   const [workoutElapsedTime, setWorkoutElapsedTime] = useState(0);
+  const [restTimerActive, setRestTimerActive] = useState(false);
+  const [restTimeRemaining, setRestTimeRemaining] = useState(0);
+  const [restExerciseIndex, setRestExerciseIndex] = useState(null);
 
   // Refs
   const flatListRef = useRef(null);
   const timerRef = useRef(null);
+  const restTimerRef = useRef(null);
 
   // Initialize workout on mount
   useEffect(() => {
-    const log = createWorkoutLog(template);
-    setWorkoutLog(log);
-    console.log('Workout initialized:', log.name);
+    const initWorkout = async () => {
+      // Check if we're resuming an active workout
+      const activeWorkout = await getActiveWorkout();
+
+      let log;
+      if (activeWorkout && activeWorkout.templateId === template.templateId) {
+        // Resume existing workout
+        log = activeWorkout;
+        console.log('Resuming workout:', log.name);
+
+        // Calculate elapsed time based on start time
+        const startTime = new Date(activeWorkout.startedAt);
+        const now = new Date();
+        const elapsedSeconds = Math.floor((now - startTime) / 1000);
+        setWorkoutElapsedTime(elapsedSeconds);
+      } else {
+        // Create new workout
+        log = createWorkoutLog(template);
+        console.log('Workout initialized:', log.name);
+      }
+
+      setWorkoutLog(log);
+    };
+
+    initWorkout();
 
     // Start workout timer
     timerRef.current = setInterval(() => {
@@ -88,7 +114,88 @@ export default function WorkoutScreen({ route, navigation }) {
       const set = updated.exercises[exerciseIndex].sets[setIndex];
 
       // Toggle completion
+      const wasCompleted = set.completed;
       set.completed = !set.completed;
+
+      // Start rest timer if set was just completed
+      if (!wasCompleted && set.completed) {
+        const exercise = updated.exercises[exerciseIndex];
+        const restTime = exercise.restTime || 90; // Default 90 seconds
+        startRestTimer(restTime, exerciseIndex);
+      }
+
+      return updated;
+    });
+  };
+
+  // Rest Timer Functions
+  const startRestTimer = (seconds, exerciseIndex) => {
+    // Clear any existing rest timer
+    if (restTimerRef.current) {
+      clearInterval(restTimerRef.current);
+    }
+
+    setRestTimeRemaining(seconds);
+    setRestExerciseIndex(exerciseIndex);
+    setRestTimerActive(true);
+
+    restTimerRef.current = setInterval(() => {
+      setRestTimeRemaining(prev => {
+        if (prev <= 1) {
+          clearInterval(restTimerRef.current);
+          setRestTimerActive(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const adjustRestTime = (seconds) => {
+    setRestTimeRemaining(prev => Math.max(0, prev + seconds));
+  };
+
+  const skipRest = () => {
+    if (restTimerRef.current) {
+      clearInterval(restTimerRef.current);
+    }
+    setRestTimerActive(false);
+    setRestTimeRemaining(0);
+  };
+
+  // Add set to exercise
+  const addSet = (exerciseIndex) => {
+    setWorkoutLog(prev => {
+      const updated = { ...prev };
+      const exercise = updated.exercises[exerciseIndex];
+      const newSetNumber = exercise.sets.length + 1;
+
+      exercise.sets.push({
+        setNumber: newSetNumber,
+        weight: null,
+        reps: null,
+        completed: false,
+        rpe: null,
+        notes: null
+      });
+
+      return updated;
+    });
+  };
+
+  // Remove set from exercise
+  const removeSet = (exerciseIndex, setIndex) => {
+    setWorkoutLog(prev => {
+      const updated = { ...prev };
+      const exercise = updated.exercises[exerciseIndex];
+
+      if (exercise.sets.length > 1) {
+        exercise.sets.splice(setIndex, 1);
+        // Renumber remaining sets
+        exercise.sets.forEach((set, idx) => {
+          set.setNumber = idx + 1;
+        });
+      }
 
       return updated;
     });
@@ -215,60 +322,110 @@ export default function WorkoutScreen({ route, navigation }) {
 
             {/* Set Rows */}
             {exercise.sets.map((set, setIndex) => (
-              <View
-                key={setIndex}
-                style={[
-                  styles.setRow,
-                  set.completed && styles.setRowCompleted
-                ]}
-              >
-                {/* Set Number */}
-                <Text style={[styles.setNumber, styles.setNumberCol]}>
-                  {set.setNumber}
-                </Text>
-
-                {/* Weight Input */}
-                <TextInput
-                  style={[styles.input, styles.weightCol]}
-                  value={set.weight ? String(set.weight) : ''}
-                  onChangeText={(text) => {
-                    const value = text.replace(/[^0-9.]/g, '');
-                    updateSet(index, setIndex, 'weight', value ? parseFloat(value) : null);
-                  }}
-                  keyboardType="numeric"
-                  placeholder="0"
-                  placeholderTextColor="#666"
-                />
-
-                {/* Reps Input */}
-                <TextInput
-                  style={[styles.input, styles.repsCol]}
-                  value={set.reps ? String(set.reps) : ''}
-                  onChangeText={(text) => {
-                    const value = text.replace(/[^0-9]/g, '');
-                    updateSet(index, setIndex, 'reps', value ? parseInt(value) : null);
-                  }}
-                  keyboardType="number-pad"
-                  placeholder="0"
-                  placeholderTextColor="#666"
-                />
-
-                {/* Complete Button */}
-                <TouchableOpacity
+              <View key={setIndex}>
+                <View
                   style={[
-                    styles.completeButton,
-                    styles.completeCol,
-                    set.completed && styles.completeButtonActive
+                    styles.setRow,
+                    set.completed && styles.setRowCompleted
                   ]}
-                  onPress={() => completeSet(index, setIndex)}
                 >
-                  <Text style={styles.completeButtonText}>
-                    {set.completed ? '✓' : '○'}
+                  {/* Set Number */}
+                  <Text style={[styles.setNumber, styles.setNumberCol]}>
+                    {set.setNumber}
                   </Text>
-                </TouchableOpacity>
+
+                  {/* Weight Input */}
+                  <TextInput
+                    style={[styles.input, styles.weightCol]}
+                    value={set.weight ? String(set.weight) : ''}
+                    onChangeText={(text) => {
+                      const value = text.replace(/[^0-9.]/g, '');
+                      updateSet(index, setIndex, 'weight', value ? parseFloat(value) : null);
+                    }}
+                    keyboardType="numeric"
+                    placeholder="0"
+                    placeholderTextColor="#666"
+                  />
+
+                  {/* Reps Input */}
+                  <TextInput
+                    style={[styles.input, styles.repsCol]}
+                    value={set.reps ? String(set.reps) : ''}
+                    onChangeText={(text) => {
+                      const value = text.replace(/[^0-9]/g, '');
+                      updateSet(index, setIndex, 'reps', value ? parseInt(value) : null);
+                    }}
+                    keyboardType="number-pad"
+                    placeholder="0"
+                    placeholderTextColor="#666"
+                  />
+
+                  {/* Complete Button */}
+                  <TouchableOpacity
+                    style={[
+                      styles.completeButton,
+                      styles.completeCol,
+                      set.completed && styles.completeButtonActive
+                    ]}
+                    onPress={() => completeSet(index, setIndex)}
+                  >
+                    <Text style={styles.completeButtonText}>
+                      {set.completed ? '✓' : '○'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             ))}
+
+            {/* Add/Remove Set Buttons */}
+            <View style={styles.setActions}>
+              <TouchableOpacity
+                style={styles.addSetButton}
+                onPress={() => addSet(index)}
+              >
+                <Text style={styles.addSetButtonText}>+ Add Set</Text>
+              </TouchableOpacity>
+              {exercise.sets.length > 1 && (
+                <TouchableOpacity
+                  style={styles.removeSetButton}
+                  onPress={() => removeSet(index, exercise.sets.length - 1)}
+                >
+                  <Text style={styles.removeSetButtonText}>- Remove Last Set</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
+
+          {/* Rest Timer */}
+          {restTimerActive && restExerciseIndex === index && (
+            <View style={styles.restTimerContainer}>
+              <Text style={styles.restTimerLabel}>Rest Timer</Text>
+              <Text style={styles.restTimerDisplay}>{formatTime(restTimeRemaining)}</Text>
+
+              <View style={styles.restTimerControls}>
+                <TouchableOpacity
+                  style={styles.restAdjustButton}
+                  onPress={() => adjustRestTime(-15)}
+                >
+                  <Text style={styles.restAdjustButtonText}>-15s</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.skipRestButton}
+                  onPress={skipRest}
+                >
+                  <Text style={styles.skipRestButtonText}>Skip Rest</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.restAdjustButton}
+                  onPress={() => adjustRestTime(15)}
+                >
+                  <Text style={styles.restAdjustButtonText}>+15s</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
 
           {/* Bottom spacing for keyboard */}
           <View style={{ height: 100 }} />
@@ -546,6 +703,85 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: 'bold',
     color: '#fff'
+  },
+
+  // Set Actions
+  setActions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12
+  },
+  addSetButton: {
+    flex: 1,
+    backgroundColor: '#00ff88',
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center'
+  },
+  addSetButtonText: {
+    color: '#000',
+    fontSize: 14,
+    fontWeight: '600'
+  },
+  removeSetButton: {
+    flex: 1,
+    backgroundColor: '#2a2a2a',
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center'
+  },
+  removeSetButtonText: {
+    color: '#ff4444',
+    fontSize: 14,
+    fontWeight: '600'
+  },
+
+  // Rest Timer
+  restTimerContainer: {
+    backgroundColor: '#00ff88',
+    borderRadius: 12,
+    padding: 20,
+    marginTop: 20,
+    alignItems: 'center'
+  },
+  restTimerLabel: {
+    color: '#000',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8
+  },
+  restTimerDisplay: {
+    color: '#000',
+    fontSize: 48,
+    fontWeight: 'bold',
+    marginBottom: 16
+  },
+  restTimerControls: {
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'center'
+  },
+  restAdjustButton: {
+    backgroundColor: '#000',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8
+  },
+  restAdjustButtonText: {
+    color: '#00ff88',
+    fontSize: 14,
+    fontWeight: 'bold'
+  },
+  skipRestButton: {
+    backgroundColor: '#000',
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    borderRadius: 8
+  },
+  skipRestButtonText: {
+    color: '#00ff88',
+    fontSize: 16,
+    fontWeight: 'bold'
   },
 
   // Footer
